@@ -13,7 +13,7 @@ jobs:
 
       - name: Unpack bundle
         run: |
-          python3 split_bundle.py salah_time_bundle.txt
+          python3 split_bundle.py salah_v2.txt
           mkdir -p assets
           cp logo.png assets/logo.png
           ls -R lib assets tool
