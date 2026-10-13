@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK v2
 
 on:
   push:
@@ -10,6 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Unpack bundle
+        run: |
+          python3 split_bundle.py salah_time_bundle.txt
+          mkdir -p assets
+          cp logo.png assets/logo.png
+          ls -R lib assets tool
 
       - uses: actions/setup-java@v4
         with:
@@ -30,7 +37,7 @@ jobs:
           cp /tmp/pubspec_backup.yaml pubspec.yaml
           rm -rf test
 
-      - name: Patch Android (Firebase, permissions, notifications)
+      - name: Patch Android
         run: python3 tool/patch_android.py
 
       - name: Install packages
