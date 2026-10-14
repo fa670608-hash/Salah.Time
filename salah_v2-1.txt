@@ -1,0 +1,2019 @@
+=== FILE: pubspec.yaml ===
+name: salah
+description: Salah Time - prayer times, Quran, tasbih and more.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.2.3
+  http: ^1.2.1
+  intl: ^0.19.0
+  adhan: ^2.0.0+1
+  hijri: ^3.0.0
+  geolocator: ^12.0.0
+  flutter_local_notifications: ^17.2.4
+  timezone: ^0.9.4
+  firebase_core: ^3.6.0
+  firebase_messaging: ^15.1.3
+  audioplayers: ^6.1.0
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.1
+  flutter_lints: ^4.0.0
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/logo.png
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo.png
+
+=== END ===
+
+=== FILE: analysis_options.yaml ===
+include: package:flutter_lints/flutter.yaml
+linter:
+  rules:
+    prefer_const_constructors: false
+    avoid_print: false
+
+=== END ===
+
+=== FILE: .gitignore ===
+build/
+.dart_tool/
+.flutter-plugins*
+.packages
+pubspec.lock
+android/
+*.iml
+.idea/
+
+=== END ===
+
+=== FILE: README.md ===
+# Salah Time (সালাহ টাইম)
+
+Flutter user app. Package: `com.bjdfarhma.salah`, Firebase project: `salah-time-d5662`.
+
+## Local build
+    flutter create --platforms=android --org com.bjdfarhma --project-name salah .
+    python3 tool/patch_android.py
+    flutter pub get
+    dart run flutter_launcher_icons
+    flutter build apk --release
+
+## Firebase setup you must do (Console)
+1. Realtime Database -> Rules: allow public read on `posters` (poster slider):
+   `{ "rules": { "posters": { ".read": true, ".write": false } } }`
+   Poster format: `posters/0 = { "title": "...", "subtitle": "...", "image": "https://..." }`
+   Dua and quiz can also be managed from the admin panel: `duas` and `quiz` (public read, admin-only write).
+   If `duas` / `quiz` are empty the app uses its built-in defaults.
+2. Cloud Messaging: users subscribe to topic `all`. Send test message to topic `all` from Console.
+3. Add your release SHA-1 later only if you add Google sign-in (not used now).
+
+## Notes
+- Quran text/translation and audio load from api.alquran.cloud / islamic.network; each surah is cached after first open (offline later).
+- Hijri date may differ 1 day from Bangladesh sighting: adjust in Settings.
+- Home-screen widget needs native Android code (planned next step).
+
+=== END ===
+
+=== FILE: google-services.json ===
+{
+  "project_info": {
+    "project_number": "266656159015",
+    "firebase_url": "https://salah-time-d5662-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "salah-time-d5662",
+    "storage_bucket": "salah-time-d5662.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:266656159015:android:11686c38012be8277c0502",
+        "android_client_info": {
+          "package_name": "com.bjdfarhma.salah"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDEdMCtC4mKUCsJV08JgIVbnGQjvbXqYcM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
+=== END ===
+
+=== FILE: lib/main.dart ===
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/material.dart';
+import 'core/app_state.dart';
+import 'core/services.dart';
+import 'core/widgets.dart';
+import 'screens/home.dart';
+import 'screens/more.dart';
+import 'screens/prayer.dart';
+import 'screens/tasbih.dart';
+
+@pragma('vm:entry-point')
+Future<void> _bgHandler(RemoteMessage m) async {
+  await Firebase.initializeApp();
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppState.i.load();
+  await Notifier.init();
+  try {
+    await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(_bgHandler);
+    await Push.init();
+  } catch (_) {}
+  runApp(const SalahApp());
+}
+
+class SalahApp extends StatelessWidget {
+  const SalahApp({super.key});
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: AppState.i,
+        builder: (context, _) => MaterialApp(
+          title: 'Salah Time',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light(),
+          darkTheme: AppTheme.dark(),
+          themeMode: st.mode,
+          builder: (c, child) => MediaQuery(
+              data: MediaQuery.of(c).copyWith(textScaler: TextScaler.linear(st.fontScale)), child: child!),
+          home: const Splash(),
+        ),
+      );
+}
+
+class Splash extends StatefulWidget {
+  const Splash({super.key});
+  @override
+  State<Splash> createState() => _SplashState();
+}
+
+class _SplashState extends State<Splash> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 1800), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 500),
+        pageBuilder: (_, __, ___) => st.onboarded ? const Shell() : const Onboarding(),
+        transitionsBuilder: (_, a, __, child) => FadeTransition(opacity: a, child: child),
+      ));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: AppTheme.green,
+        body: Center(
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: .7, end: 1),
+            duration: const Duration(milliseconds: 900),
+            curve: Curves.easeOutBack,
+            builder: (_, v, child) => Opacity(opacity: v.clamp(0, 1), child: Transform.scale(scale: v, child: child)),
+            child: Image.asset('assets/logo.png', width: 220),
+          ),
+        ),
+      );
+}
+
+class Onboarding extends StatefulWidget {
+  const Onboarding({super.key});
+  @override
+  State<Onboarding> createState() => _OnboardingState();
+}
+
+class _OnboardingState extends State<Onboarding> {
+  bool busy = false;
+
+  Future<void> go() async {
+    setState(() => busy = true);
+    await PrayerService.updateLocation();
+    await Notifier.ask();
+    await Notifier.schedule();
+    st.setOnboarded();
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const Shell()));
+  }
+
+  Widget item(IconData i, String t) => Panel(
+        child: Row(children: [
+          CircleAvatar(backgroundColor: AppTheme.gold.withOpacity(.25), child: Icon(i, color: AppTheme.green)),
+          const SizedBox(width: 14),
+          Expanded(child: Text(t, style: const TextStyle(fontWeight: FontWeight.w600))),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(children: [
+              const Spacer(),
+              Image.asset('assets/logo.png', width: 150),
+              const SizedBox(height: 16),
+              Text(tr('welcome'), style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 24),
+              item(Icons.location_on_outlined, tr('allowLoc')),
+              item(Icons.notifications_active_outlined, tr('allowNotif')),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [ButtonSegment(value: 'bn', label: Text('বাংলা')), ButtonSegment(value: 'en', label: Text('English'))],
+                selected: {st.lang},
+                onSelectionChanged: (s) {
+                  st.setLang(s.first);
+                  setState(() {});
+                },
+              ),
+              const Spacer(),
+              SizedBox(
+                width: double.infinity,
+                height: 54,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: AppTheme.green, foregroundColor: Colors.white),
+                  onPressed: busy ? null : go,
+                  child: busy
+                      ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(tr('start'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ]),
+          ),
+        ),
+      );
+}
+
+class Shell extends StatefulWidget {
+  const Shell({super.key});
+  @override
+  State<Shell> createState() => _ShellState();
+}
+
+class _ShellState extends State<Shell> {
+  int idx = 0;
+  @override
+  Widget build(BuildContext context) {
+    final pages = [const HomeScreen(), const PrayerScreen(), const TasbihScreen(), const MoreScreen()];
+    return Scaffold(
+      body: AnimatedSwitcher(duration: const Duration(milliseconds: 250), child: KeyedSubtree(key: ValueKey(idx), child: pages[idx])),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: idx,
+        onDestinationSelected: (i) => setState(() => idx = i),
+        destinations: [
+          NavigationDestination(icon: const Icon(Icons.home_outlined), selectedIcon: const Icon(Icons.home_rounded), label: tr('home')),
+          NavigationDestination(icon: const Icon(Icons.mosque_outlined), selectedIcon: const Icon(Icons.mosque), label: tr('prayer')),
+          NavigationDestination(icon: const Icon(Icons.radio_button_unchecked), selectedIcon: const Icon(Icons.radio_button_checked), label: tr('tasbih')),
+          NavigationDestination(icon: const Icon(Icons.grid_view_outlined), selectedIcon: const Icon(Icons.grid_view_rounded), label: tr('more')),
+        ],
+      ),
+    );
+  }
+}
+
+=== END ===
+
+=== FILE: lib/core/app_state.dart ===
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'strings.dart';
+
+const prayerKeys = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
+
+class AppState extends ChangeNotifier {
+  static final AppState i = AppState._();
+  AppState._();
+
+  late SharedPreferences prefs;
+  String lang = 'bn';
+  ThemeMode mode = ThemeMode.system;
+  double fontScale = 1.0;
+  bool azan = true;
+  bool onboarded = false;
+  int hijriAdj = 0;
+  double lat = 23.8103, lng = 90.4125;
+  String place = 'Dhaka';
+  int tasbihCount = 0, tasbihTarget = 33, tasbihTotal = 0, quizBest = 0;
+  Map<String, bool> prayerOn = {for (final k in prayerKeys) k: true};
+
+  Future<void> load() async {
+    prefs = await SharedPreferences.getInstance();
+    lang = prefs.getString('lang') ?? 'bn';
+    mode = ThemeMode.values[prefs.getInt('mode') ?? 0];
+    fontScale = prefs.getDouble('font') ?? 1.0;
+    azan = prefs.getBool('azan') ?? true;
+    onboarded = prefs.getBool('onboarded') ?? false;
+    hijriAdj = prefs.getInt('hijriAdj') ?? 0;
+    lat = prefs.getDouble('lat') ?? lat;
+    lng = prefs.getDouble('lng') ?? lng;
+    place = prefs.getString('place') ?? place;
+    tasbihCount = prefs.getInt('tc') ?? 0;
+    tasbihTarget = prefs.getInt('tt') ?? 33;
+    tasbihTotal = prefs.getInt('ttl') ?? 0;
+    quizBest = prefs.getInt('qb') ?? 0;
+    for (final k in prayerKeys) {
+      prayerOn[k] = prefs.getBool('p_$k') ?? true;
+    }
+  }
+
+  void setLang(String v) { lang = v; prefs.setString('lang', v); notifyListeners(); }
+  void setMode(ThemeMode m) { mode = m; prefs.setInt('mode', m.index); notifyListeners(); }
+  void setFont(double v) { fontScale = v; prefs.setDouble('font', v); notifyListeners(); }
+  void setAzan(bool v) { azan = v; prefs.setBool('azan', v); notifyListeners(); }
+  void setHijriAdj(int v) { hijriAdj = v; prefs.setInt('hijriAdj', v); notifyListeners(); }
+  void setOnboarded() { onboarded = true; prefs.setBool('onboarded', true); }
+  void setPrayerOn(String k, bool v) { prayerOn[k] = v; prefs.setBool('p_$k', v); notifyListeners(); }
+  void setLocation(double a, double b, String p) {
+    lat = a; lng = b; place = p;
+    prefs.setDouble('lat', a); prefs.setDouble('lng', b); prefs.setString('place', p);
+    notifyListeners();
+  }
+  void saveTasbih() {
+    prefs.setInt('tc', tasbihCount); prefs.setInt('tt', tasbihTarget); prefs.setInt('ttl', tasbihTotal);
+    notifyListeners();
+  }
+  void setQuizBest(int v) { quizBest = v; prefs.setInt('qb', v); }
+
+  // Notification inbox
+  List<Map<String, dynamic>> inbox() {
+    final raw = prefs.getStringList('inbox') ?? [];
+    return raw.map((e) => jsonDecode(e) as Map<String, dynamic>).toList();
+  }
+  void addInbox(String title, String body) {
+    final l = prefs.getStringList('inbox') ?? [];
+    l.insert(0, jsonEncode({'t': title, 'b': body, 'd': DateTime.now().toIso8601String()}));
+    prefs.setStringList('inbox', l.take(50).toList());
+    notifyListeners();
+  }
+}
+
+AppState get st => AppState.i;
+String tr(String k) => Strings.get(k, AppState.i.lang);
+
+/// Converts digits to Bangla when the language is Bangla.
+String nd(Object v) {
+  final s = v.toString();
+  if (AppState.i.lang != 'bn') return s;
+  const bn = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+  return s.replaceAllMapped(RegExp(r'[0-9]'), (m) => bn[int.parse(m[0]!)]);
+}
+
+=== END ===
+
+=== FILE: lib/core/services.dart ===
+import 'dart:convert';
+import 'package:adhan/adhan.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:hijri/hijri_calendar.dart';
+import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
+import 'app_state.dart';
+
+const dbUrl = 'https://salah-time-d5662-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+class PrayerTime {
+  final String key;
+  final DateTime time;
+  PrayerTime(this.key, this.time);
+}
+
+class PrayerService {
+  /// All six times (with sunrise) for the given day.
+  static List<PrayerTime> forDay(DateTime day) {
+    final c = Coordinates(st.lat, st.lng);
+    final p = CalculationMethod.karachi.getParameters();
+    p.madhab = Madhab.hanafi;
+    final t = PrayerTimes(c, DateComponents.from(day), p);
+    return [
+      PrayerTime('fajr', t.fajr.toLocal()),
+      PrayerTime('sunrise', t.sunrise.toLocal()),
+      PrayerTime('dhuhr', t.dhuhr.toLocal()),
+      PrayerTime('asr', t.asr.toLocal()),
+      PrayerTime('maghrib', t.maghrib.toLocal()),
+      PrayerTime('isha', t.isha.toLocal()),
+    ];
+  }
+
+  /// Next of the five obligatory prayers (skips sunrise).
+  static PrayerTime next(DateTime now) {
+    for (final p in forDay(now)) {
+      if (p.key != 'sunrise' && p.time.isAfter(now)) return p;
+    }
+    return forDay(now.add(const Duration(days: 1))).first;
+  }
+
+  static PrayerTime? current(DateTime now) {
+    PrayerTime? cur;
+    for (final p in forDay(now)) {
+      if (p.key != 'sunrise' && !p.time.isAfter(now)) cur = p;
+    }
+    return cur;
+  }
+
+  static Future<bool> updateLocation() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) return false;
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) return false;
+      final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.low, timeLimit: const Duration(seconds: 15));
+      st.setLocation(pos.latitude, pos.longitude,
+          '${pos.latitude.toStringAsFixed(2)}, ${pos.longitude.toStringAsFixed(2)}');
+      await Notifier.schedule();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+String fmtTime(DateTime t) {
+  final s = DateFormat('h:mm').format(t);
+  return '${nd(s)} ${t.hour < 12 ? tr('am') : tr('pm')}';
+}
+
+String fmtDur(Duration d) {
+  if (d.isNegative) d = Duration.zero;
+  String two(int n) => n.toString().padLeft(2, '0');
+  return nd('${two(d.inHours)}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}');
+}
+
+const bnMonths = ['বৈশাখ', 'জ্যৈষ্ঠ', 'আষাঢ়', 'শ্রাবণ', 'ভাদ্র', 'আশ্বিন', 'কার্তিক', 'অগ্রহায়ণ', 'পৌষ', 'মাঘ', 'ফাল্গুন', 'চৈত্র'];
+const bnMonthsEn = ['Boishakh', 'Joishtho', 'Asharh', 'Srabon', 'Bhadro', 'Ashwin', 'Kartik', 'Agrahayan', 'Poush', 'Magh', 'Falgun', 'Choitro'];
+const hijriBn = ['মুহাররম', 'সফর', 'রবিউল আউয়াল', 'রবিউস সানি', 'জমাদিউল আউয়াল', 'জমাদিউস সানি', 'রজব', 'শাবান', 'রমজান', 'শাওয়াল', 'জিলকদ', 'জিলহজ'];
+const hijriEn = ['Muharram', 'Safar', 'Rabi al-Awwal', 'Rabi al-Thani', 'Jumada al-Awwal', 'Jumada al-Thani', 'Rajab', 'Shaban', 'Ramadan', 'Shawwal', 'Dhul Qadah', 'Dhul Hijjah'];
+
+class BnDate {
+  final int year, month, day;
+  BnDate(this.year, this.month, this.day);
+  String get monthName => st.lang == 'bn' ? bnMonths[month] : bnMonthsEn[month];
+}
+
+/// Bangladesh revised Bangla calendar (new year on 14 April).
+BnDate bnDate(DateTime dt) {
+  final date = DateTime.utc(dt.year, dt.month, dt.day);
+  final gy = date.isBefore(DateTime.utc(dt.year, 4, 14)) ? dt.year - 1 : dt.year;
+  var days = date.difference(DateTime.utc(gy, 4, 14)).inDays;
+  final ny = gy + 1;
+  final leap = (ny % 4 == 0 && ny % 100 != 0) || ny % 400 == 0;
+  final lens = [31, 31, 31, 31, 31, 30, 30, 30, 30, 30, leap ? 30 : 29, 30];
+  var m = 0;
+  while (m < 11 && days >= lens[m]) {
+    days -= lens[m];
+    m++;
+  }
+  return BnDate(gy - 593, m, days + 1);
+}
+
+class HijriDate {
+  final int year, month, day;
+  HijriDate(this.year, this.month, this.day);
+  String get monthName => st.lang == 'bn' ? hijriBn[month - 1] : hijriEn[month - 1];
+}
+
+HijriDate hijriOf(DateTime dt) {
+  final h = HijriCalendar.fromDate(dt.add(Duration(days: st.hijriAdj)));
+  return HijriDate(h.hYear, h.hMonth, h.hDay);
+}
+
+class Notifier {
+  static final fln = FlutterLocalNotificationsPlugin();
+  static const _details = NotificationDetails(
+      android: AndroidNotificationDetails('azan', 'Azan',
+          channelDescription: 'Prayer time alerts', importance: Importance.max, priority: Priority.high));
+
+  static Future<void> init() async {
+    tzdata.initializeTimeZones();
+    await fln.initialize(const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')));
+  }
+
+  static Future<void> ask() async {
+    await fln
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+  }
+
+  static Future<void> show(String title, String body) =>
+      fln.show(DateTime.now().millisecondsSinceEpoch ~/ 1000, title, body, _details);
+
+  static Future<void> schedule() async {
+    try {
+      await fln.cancelAll();
+      if (!st.azan) return;
+      final now = DateTime.now();
+      for (var d = 0; d < 3; d++) {
+        final day = now.add(Duration(days: d));
+        for (final p in PrayerService.forDay(day)) {
+          if (p.key == 'sunrise' || st.prayerOn[p.key] != true || !p.time.isAfter(now)) continue;
+          final id = d * 10 + prayerKeys.indexOf(p.key);
+          final when = tz.TZDateTime.from(p.time, tz.UTC);
+          final title = '${tr(p.key)} - ${tr('app')}';
+          final body = fmtTime(p.time);
+          try {
+            await fln.zonedSchedule(id, title, body, when, _details,
+                androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+                uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime);
+          } catch (_) {
+            await fln.zonedSchedule(id, title, body, when, _details,
+                androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+                uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+}
+
+class Push {
+  static Future<void> init() async {
+    final m = FirebaseMessaging.instance;
+    await m.requestPermission();
+    await m.subscribeToTopic('all');
+    FirebaseMessaging.onMessage.listen((msg) {
+      final n = msg.notification;
+      if (n == null) return;
+      st.addInbox(n.title ?? '', n.body ?? '');
+      Notifier.show(n.title ?? tr('app'), n.body ?? '');
+    });
+    FirebaseMessaging.onMessageOpenedApp.listen((msg) {
+      final n = msg.notification;
+      if (n != null) st.addInbox(n.title ?? '', n.body ?? '');
+    });
+  }
+}
+
+class Remote {
+  static List<Map<String, dynamic>> _parseList(String? raw) {
+    if (raw == null) return [];
+    try {
+      final j = jsonDecode(raw);
+      final list = j is List ? j : (j is Map ? j.values.toList() : <dynamic>[]);
+      return list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Instant read of a list from the local cache (no network).
+  static List<Map<String, dynamic>> cachedList(String path) => _parseList(st.prefs.getString(path));
+
+  /// Fetch /<path> from Realtime Database (public read), cache it for offline, return the list.
+  /// If the admin deleted everything (null) the cache is cleared too.
+  static Future<List<Map<String, dynamic>>> list(String path) async {
+    try {
+      final r = await http.get(Uri.parse('$dbUrl/$path.json')).timeout(const Duration(seconds: 8));
+      if (r.statusCode == 200) {
+        final body = utf8.decode(r.bodyBytes);
+        if (body.trim() == 'null') {
+          await st.prefs.remove(path);
+        } else {
+          await st.prefs.setString(path, body);
+        }
+      }
+    } catch (_) {}
+    return cachedList(path);
+  }
+
+  /// Poster slider items from Realtime Database path /posters (cached for offline).
+  static Future<List<Map<String, dynamic>>> posters() => list('posters');
+
+  /// Fetch JSON with local cache so it keeps working offline.
+  static Future<dynamic> cached(String url, String key) async {
+    try {
+      final r = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 20));
+      if (r.statusCode == 200) {
+        await st.prefs.setString(key, utf8.decode(r.bodyBytes));
+      }
+    } catch (_) {}
+    final raw = st.prefs.getString(key);
+    return raw == null ? null : jsonDecode(raw);
+  }
+}
+
+=== END ===
+
+=== FILE: lib/core/strings.dart ===
+const Map<String, List<String>> _s = {
+  // [bn, en]
+  'app': ['সালাহ টাইম', 'Salah Time'],
+  'home': ['হোম', 'Home'],
+  'prayer': ['নামাজ', 'Prayer'],
+  'tasbih': ['তাসবিহ', 'Tasbih'],
+  'more': ['আরও', 'More'],
+  'fajr': ['ফজর', 'Fajr'],
+  'sunrise': ['সূর্যোদয়', 'Sunrise'],
+  'dhuhr': ['যোহর', 'Dhuhr'],
+  'asr': ['আসর', 'Asr'],
+  'maghrib': ['মাগরিব', 'Maghrib'],
+  'isha': ['এশা', 'Isha'],
+  'next': ['পরবর্তী নামাজ', 'Next prayer'],
+  'ramadan': ['রমজান মোড', 'Ramadan Mode'],
+  'sehri': ['সেহরি', 'Sehri'],
+  'iftar': ['ইফতার', 'Iftar'],
+  'taraweeh': ['তারাবি', 'Taraweeh'],
+  'toRamadan': ['রমজান আসতে বাকি', 'Until Ramadan'],
+  'days': ['দিন', 'days'],
+  'ramadanDay': ['রমজানের দিন', 'Ramadan day'],
+  'untilIftar': ['ইফতারের বাকি', 'Until Iftar'],
+  'untilSehri': ['সেহরির বাকি', 'Until Sehri'],
+  'calendar': ['ইসলামিক ক্যালেন্ডার', 'Islamic Calendar'],
+  'quiz': ['ইসলামিক কুইজ', 'Islamic Quiz'],
+  'dua': ['দোয়া', 'Dua'],
+  'quran': ['কোরআন', 'Quran'],
+  'settings': ['সেটিংস', 'Settings'],
+  'language': ['ভাষা', 'Language'],
+  'theme': ['থিম', 'Theme'],
+  'light': ['লাইট', 'Light'],
+  'dark': ['ডার্ক', 'Dark'],
+  'auto': ['অটো', 'Auto'],
+  'fontSize': ['লেখার আকার', 'Text size'],
+  'azanNotif': ['আজান নোটিফিকেশন', 'Azan notifications'],
+  'hijriAdj': ['হিজরি তারিখ সমন্বয়', 'Hijri date adjustment'],
+  'search': ['খুঁজুন', 'Search'],
+  'reset': ['রিসেট', 'Reset'],
+  'target': ['লক্ষ্য', 'Target'],
+  'welcome': ['স্বাগতম', 'Welcome'],
+  'allowLoc': ['নির্ভুল নামাজের সময়ের জন্য লোকেশন', 'Location for accurate prayer times'],
+  'allowNotif': ['আজানের সময় নোটিফিকেশন', 'Notifications at azan time'],
+  'start': ['শুরু করুন', 'Get started'],
+  'location': ['অবস্থান', 'Location'],
+  'updateLoc': ['লোকেশন আপডেট', 'Update location'],
+  'notifications': ['নোটিফিকেশন', 'Notifications'],
+  'noNotif': ['কোনো নোটিফিকেশন নেই', 'No notifications yet'],
+  'about': ['অ্যাপ সম্পর্কে', 'About'],
+  'needNet': ['প্রথমবার ইন্টারনেট প্রয়োজন, তারপর অফলাইনেও চলবে', 'Internet needed the first time; works offline afterwards'],
+  'score': ['স্কোর', 'Score'],
+  'nextQ': ['পরের প্রশ্ন', 'Next'],
+  'again': ['আবার খেলুন', 'Play again'],
+  'best': ['সেরা স্কোর', 'Best score'],
+  'surahs': ['সূরা', 'Surahs'],
+  'ayahs': ['আয়াত', 'Ayahs'],
+  'play': ['অডিও শুনুন', 'Play audio'],
+  'stop': ['থামান', 'Stop'],
+  'total': ['মোট', 'Total'],
+  'am': ['পূর্বাহ্ণ', 'AM'],
+  'pm': ['অপরাহ্ণ', 'PM'],
+  'bnDate': ['বাংলা', 'Bangla'],
+  'enDate': ['ইংরেজি', 'English'],
+  'hijriDate': ['হিজরি', 'Hijri'],
+  'quickLinks': ['দ্রুত অ্যাক্সেস', 'Quick access'],
+  'playQuiz': ['কুইজ শুরু করুন', 'Start quiz'],
+  'quizSub': ['ইসলামিক জ্ঞান যাচাই করুন', 'Test your Islamic knowledge'],
+  'prayerAlerts': ['নামাজভিত্তিক অ্যালার্ট', 'Per-prayer alerts'],
+  'retry': ['আবার চেষ্টা করুন', 'Retry'],
+};
+
+class Strings {
+  static String get(String k, String lang) {
+    final v = _s[k];
+    if (v == null) return k;
+    return lang == 'bn' ? v[0] : v[1];
+  }
+}
+
+=== END ===
+
+=== FILE: lib/core/widgets.dart ===
+import 'package:flutter/material.dart';
+
+class AppTheme {
+  static const green = Color(0xFF0A3C36);
+  static const gold = Color(0xFFE5C158);
+  static const ice = Color(0xFFF8FAFC);
+  static const slate = Color(0xFF0F172A);
+  static const darkCard = Color(0xFF1E293B);
+
+  static ThemeData light() => ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: ice,
+        colorScheme: ColorScheme.fromSeed(seedColor: green, brightness: Brightness.light)
+            .copyWith(primary: green, secondary: gold, onSurface: slate),
+        navigationBarTheme: NavigationBarThemeData(
+            backgroundColor: Colors.white,
+            indicatorColor: gold.withOpacity(.35),
+            labelTextStyle: WidgetStateProperty.all(const TextStyle(fontWeight: FontWeight.w600, fontSize: 12))),
+      );
+
+  static ThemeData dark() => ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: slate,
+        colorScheme: ColorScheme.fromSeed(seedColor: green, brightness: Brightness.dark)
+            .copyWith(primary: gold, secondary: gold, surface: darkCard),
+        navigationBarTheme: NavigationBarThemeData(
+            backgroundColor: const Color(0xFF111C30),
+            indicatorColor: gold.withOpacity(.25),
+            labelTextStyle: WidgetStateProperty.all(const TextStyle(fontWeight: FontWeight.w600, fontSize: 12))),
+      );
+}
+
+bool isDark(BuildContext c) => Theme.of(c).brightness == Brightness.dark;
+Color accent(BuildContext c) => isDark(c) ? AppTheme.gold : AppTheme.green;
+
+class Panel extends StatelessWidget {
+  final Widget child;
+  final EdgeInsets padding;
+  final VoidCallback? onTap;
+  final Gradient? gradient;
+  const Panel({super.key, required this.child, this.padding = const EdgeInsets.all(16), this.onTap, this.gradient});
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = isDark(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: gradient == null ? (dark ? AppTheme.darkCard : Colors.white) : null,
+        gradient: gradient,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: dark ? Colors.white10 : const Color(0x14000000)),
+        boxShadow: dark ? null : const [BoxShadow(color: Color(0x0D0F172A), blurRadius: 18, offset: Offset(0, 6))],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(borderRadius: BorderRadius.circular(22), onTap: onTap, child: Padding(padding: padding, child: child)),
+      ),
+    );
+  }
+}
+
+class SectionTitle extends StatelessWidget {
+  final String text;
+  final IconData icon;
+  const SectionTitle(this.text, this.icon, {super.key});
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 10, top: 4),
+        child: Row(children: [
+          Icon(icon, size: 20, color: accent(context)),
+          const SizedBox(width: 8),
+          Text(text, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+        ]),
+      );
+}
+
+const emeraldGradient = LinearGradient(
+    colors: [Color(0xFF0A3C36), Color(0xFF0F5A50)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+
+=== END ===
+
+=== FILE: lib/screens/dua.dart ===
+import 'package:flutter/material.dart';
+import '../core/app_state.dart';
+import '../core/services.dart';
+import '../core/widgets.dart';
+
+class Dua {
+  final String title, titleEn, ar, bn, en;
+  const Dua(this.title, this.titleEn, this.ar, this.bn, this.en);
+
+  factory Dua.fromMap(Map<String, dynamic> m) =>
+      Dua('${m['title'] ?? ''}', '${m['titleEn'] ?? ''}', '${m['ar'] ?? ''}', '${m['bn'] ?? ''}', '${m['en'] ?? ''}');
+}
+
+const duas = [
+  Dua('ঘুমানোর আগের দোয়া', 'Before sleeping', 'بِاسْمِكَ اللَّهُمَّ أَمُوتُ وَأَحْيَا',
+      'হে আল্লাহ, আপনারই নামে মৃত্যুবরণ করি (ঘুমাই) এবং আপনারই নামে জীবিত হই (জাগি)।', 'In Your name, O Allah, I die and I live.'),
+  Dua('ঘুম থেকে উঠার দোয়া', 'Upon waking up', 'الْحَمْدُ لِلَّهِ الَّذِي أَحْيَانَا بَعْدَ مَا أَمَاتَنَا وَإِلَيْهِ النُّشُورُ',
+      'সমস্ত প্রশংসা আল্লাহর, যিনি আমাদের মৃত্যুর পর জীবন দিয়েছেন এবং তাঁর কাছেই ফিরে যেতে হবে।', 'Praise is to Allah who gave us life after death, and to Him is the resurrection.'),
+  Dua('খাওয়ার আগের দোয়া', 'Before eating', 'بِسْمِ اللَّهِ وَعَلَى بَرَكَةِ اللَّهِ', 'আল্লাহর নামে এবং আল্লাহর বরকতের উপর শুরু করছি।', 'In the name of Allah and with the blessings of Allah.'),
+  Dua('খাওয়ার পরের দোয়া', 'After eating', 'الْحَمْدُ لِلَّهِ الَّذِي أَطْعَمَنَا وَسَقَانَا وَجَعَلَنَا مُسْلِمِينَ',
+      'সমস্ত প্রশংসা আল্লাহর, যিনি আমাদের খাওয়ালেন, পান করালেন এবং মুসলিম বানালেন।', 'Praise is to Allah who fed us, gave us drink and made us Muslims.'),
+  Dua('ঘর থেকে বের হওয়ার দোয়া', 'Leaving home', 'بِسْمِ اللَّهِ تَوَكَّلْتُ عَلَى اللَّهِ وَلَا حَوْلَ وَلَا قُوَّةَ إِلَّا بِاللَّهِ',
+      'আল্লাহর নামে, আল্লাহর উপর ভরসা করলাম; আল্লাহ ছাড়া কোনো শক্তি ও ক্ষমতা নেই।', 'In the name of Allah, I trust in Allah; there is no power or might except with Allah.'),
+  Dua('ইফতারের দোয়া', 'Breaking the fast', 'اللَّهُمَّ لَكَ صُمْتُ وَعَلَى رِزْقِكَ أَفْطَرْتُ',
+      'হে আল্লাহ, আপনার জন্যই রোজা রেখেছি এবং আপনার দেওয়া রিজিক দিয়েই ইফতার করছি।', 'O Allah, I fasted for You and I break my fast with Your provision.'),
+  Dua('দুনিয়া ও আখিরাতের কল্যাণের দোয়া', 'Good in this life and the next', 'رَبَّنَا آتِنَا فِي الدُّنْيَا حَسَنَةً وَفِي الْآخِرَةِ حَسَنَةً وَقِنَا عَذَابَ النَّارِ',
+      'হে আমাদের রব, আমাদের দুনিয়াতে কল্যাণ দিন, আখিরাতে কল্যাণ দিন এবং জাহান্নামের আজাব থেকে রক্ষা করুন।', 'Our Lord, give us good in this world and good in the Hereafter, and protect us from the Fire.'),
+  Dua('ইলম বৃদ্ধির দোয়া', 'Increase in knowledge', 'رَبِّ زِدْنِي عِلْمًا', 'হে আমার রব, আমার জ্ঞান বৃদ্ধি করুন।', 'My Lord, increase me in knowledge.'),
+];
+
+class DuaScreen extends StatefulWidget {
+  const DuaScreen({super.key});
+  @override
+  State<DuaScreen> createState() => _DuaScreenState();
+}
+
+class _DuaScreenState extends State<DuaScreen> {
+  String q = '';
+  List<Dua> items = duas;
+
+  /// Admin-managed list (Firebase /duas). Empty or missing -> built-in defaults.
+  static List<Dua> _parse(List<Map<String, dynamic>> raw) {
+    final l = raw.map(Dua.fromMap).where((d) => d.ar.isNotEmpty || d.bn.isNotEmpty || d.en.isNotEmpty).toList();
+    return l.isEmpty ? duas : l;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    items = _parse(Remote.cachedList('duas'));
+    Remote.list('duas').then((r) {
+      if (mounted) setState(() => items = _parse(r));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bn = st.lang == 'bn';
+    final list = items.where((d) {
+      final s = q.trim().toLowerCase();
+      return s.isEmpty || d.title.contains(s) || d.titleEn.toLowerCase().contains(s) || d.bn.contains(s) || d.en.toLowerCase().contains(s) || d.ar.contains(s);
+    }).toList();
+    return Scaffold(
+      appBar: AppBar(title: Text(tr('dua'))),
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: TextField(
+            onChanged: (v) => setState(() => q = v),
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search),
+              hintText: tr('search'),
+              filled: true,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+            ),
+          ),
+        ),
+        Expanded(
+          child: ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 24), children: [
+            for (final d in list)
+              Panel(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(bn ? d.title : (d.titleEn.isEmpty ? d.title : d.titleEn), style: TextStyle(color: accent(context), fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 10),
+                  Text(d.ar, textAlign: TextAlign.right, textDirection: TextDirection.rtl, style: const TextStyle(fontSize: 24, height: 1.9)),
+                  const SizedBox(height: 8),
+                  Text(bn ? (d.bn.isEmpty ? d.en : d.bn) : (d.en.isEmpty ? d.bn : d.en)),
+                ]),
+              ),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+=== END ===
+
+=== FILE: lib/screens/home.dart ===
+import 'dart:async';
+import 'package:flutter/material.dart';
+import '../core/app_state.dart';
+import '../core/services.dart';
+import '../core/widgets.dart';
+import 'dua.dart';
+import 'quiz.dart';
+import 'quran.dart';
+import 'settings.dart';
+import 'tasbih.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  List<Map<String, dynamic>> posters = [];
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _load();
+    // pick up admin-panel changes without restarting the app
+    _poll = Timer.periodic(const Duration(seconds: 30), (_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  Future<void> _load() async {
+    final p = await Remote.posters();
+    if (mounted) setState(() => posters = p);
+  }
+
+  Future<void> _refresh() async {
+    await Future.wait([_load(), PrayerService.updateLocation()]);
+    await Notifier.schedule();
+    if (mounted) setState(() {});
+  }
+
+  void _inbox() {
+    final items = st.inbox();
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SizedBox(
+        height: 380,
+        child: items.isEmpty
+            ? Center(child: Text(tr('noNotif')))
+            : ListView(
+                children: [
+                  for (final m in items)
+                    ListTile(
+                      leading: const Icon(Icons.notifications_none_rounded),
+                      title: Text('${m['t']}'),
+                      subtitle: Text('${m['b']}'),
+                    )
+                ],
+              ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: RefreshIndicator(
+        color: AppTheme.green,
+        backgroundColor: AppTheme.gold,
+        onRefresh: _refresh,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          children: [
+            Row(children: [
+              Image.asset('assets/logo.png', width: 44, height: 44),
+              const SizedBox(width: 10),
+              Expanded(child: Text(tr('app'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800))),
+              IconButton(onPressed: _inbox, icon: const Icon(Icons.notifications_none_rounded)),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert),
+                onSelected: (v) {
+                  if (v == 'lang') st.setLang(st.lang == 'bn' ? 'en' : 'bn');
+                  if (v == 'set') Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem(value: 'lang', child: Text(st.lang == 'bn' ? 'English' : 'বাংলা')),
+                  PopupMenuItem(value: 'set', child: Text(tr('settings'))),
+                ],
+              ),
+            ]),
+            const SizedBox(height: 8),
+            PosterSlider(items: posters),
+            const SizedBox(height: 14),
+            const PrayerCard(),
+            const RamadanCard(),
+            const CalendarCard(),
+            Panel(
+              gradient: emeraldGradient,
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const QuizScreen())),
+              child: Row(children: [
+                const Icon(Icons.quiz_outlined, color: AppTheme.gold, size: 34),
+                const SizedBox(width: 14),
+                Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(tr('quiz'), style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700)),
+                  Text(tr('quizSub'), style: const TextStyle(color: Colors.white70)),
+                ])),
+                const Icon(Icons.arrow_forward_ios_rounded, color: AppTheme.gold, size: 18),
+              ]),
+            ),
+            SectionTitle(tr('quickLinks'), Icons.bolt_outlined),
+            Row(children: [
+              _quick(context, Icons.menu_book_outlined, tr('quran'), const QuranScreen()),
+              const SizedBox(width: 12),
+              _quick(context, Icons.front_hand_outlined, tr('dua'), const DuaScreen()),
+              const SizedBox(width: 12),
+              _quick(context, Icons.radio_button_checked, tr('tasbih'), const Scaffold(body: SafeArea(child: TasbihScreen()))),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _quick(BuildContext c, IconData i, String t, Widget page) => Expanded(
+        child: Panel(
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => page)),
+          child: Column(children: [
+            Icon(i, size: 30, color: accent(c)),
+            const SizedBox(height: 8),
+            Text(t, style: const TextStyle(fontWeight: FontWeight.w600)),
+          ]),
+        ),
+      );
+}
+
+class PosterSlider extends StatefulWidget {
+  final List<Map<String, dynamic>> items;
+  const PosterSlider({super.key, required this.items});
+  @override
+  State<PosterSlider> createState() => _PosterSliderState();
+}
+
+class _PosterSliderState extends State<PosterSlider> {
+  final pc = PageController(viewportFraction: .94);
+  int page = 0;
+
+  @override
+  void didUpdateWidget(covariant PosterSlider old) {
+    super.didUpdateWidget(old);
+    if (page >= widget.items.length && page != 0) {
+      page = 0;
+      if (pc.hasClients) pc.jumpToPage(0);
+    }
+  }
+
+  List<Map<String, dynamic>> get data => widget.items.isNotEmpty
+      ? widget.items
+      : [
+          {'title': 'Salah Time', 'subtitle': tr('prayer')},
+          {'title': tr('quran'), 'subtitle': tr('surahs')},
+          {'title': tr('tasbih'), 'subtitle': tr('dua')},
+        ];
+
+  @override
+  Widget build(BuildContext context) {
+    final d = data;
+    return Column(children: [
+      SizedBox(
+        height: 140,
+        child: PageView.builder(
+          controller: pc,
+          itemCount: d.length,
+          onPageChanged: (i) => setState(() => page = i),
+          itemBuilder: (_, i) {
+            final m = d[i];
+            final img = m['image']?.toString();
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                gradient: emeraldGradient,
+                image: img != null && img.isNotEmpty ? DecorationImage(image: NetworkImage(img), fit: BoxFit.cover) : null,
+              ),
+              padding: const EdgeInsets.all(18),
+              alignment: Alignment.bottomLeft,
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('${m['title'] ?? ''}', style: const TextStyle(color: AppTheme.gold, fontSize: 22, fontWeight: FontWeight.w800)),
+                Text('${m['subtitle'] ?? ''}', style: const TextStyle(color: Colors.white70)),
+              ]),
+            );
+          },
+        ),
+      ),
+      const SizedBox(height: 8),
+      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        for (var i = 0; i < d.length; i++)
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            width: i == page ? 20 : 6,
+            height: 6,
+            decoration: BoxDecoration(color: i == page ? AppTheme.gold : Colors.grey.withOpacity(.4), borderRadius: BorderRadius.circular(3)),
+          ),
+      ]),
+    ]);
+  }
+}
+
+class PrayerCard extends StatelessWidget {
+  const PrayerCard({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DateTime>(
+      stream: Stream.periodic(const Duration(seconds: 1), (_) => DateTime.now()),
+      initialData: DateTime.now(),
+      builder: (_, snap) {
+        final now = snap.data!;
+        final nx = PrayerService.next(now);
+        final cur = PrayerService.current(now);
+        final list = PrayerService.forDay(now).where((p) => p.key != 'sunrise').toList();
+        return Panel(
+          gradient: emeraldGradient,
+          child: Column(children: [
+            Text(tr('next'), style: const TextStyle(color: Colors.white70)),
+            const SizedBox(height: 4),
+            Text(tr(nx.key), style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700)),
+            Text(fmtDur(nx.time.difference(now)),
+                style: const TextStyle(color: AppTheme.gold, fontSize: 42, fontWeight: FontWeight.w800, letterSpacing: 1)),
+            const SizedBox(height: 10),
+            Row(children: [
+              for (final p in list)
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 2),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      color: cur?.key == p.key ? AppTheme.gold : Colors.white.withOpacity(.08),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Column(children: [
+                      Text(tr(p.key),
+                          style: TextStyle(fontSize: 12, color: cur?.key == p.key ? AppTheme.green : Colors.white70, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 3),
+                      Text(fmtTime(p.time).split(' ').first,
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: cur?.key == p.key ? AppTheme.green : Colors.white)),
+                    ]),
+                  ),
+                ),
+            ]),
+          ]),
+        );
+      },
+    );
+  }
+}
+
+class RamadanCard extends StatelessWidget {
+  const RamadanCard({super.key});
+
+  int _daysToRamadan(DateTime now) {
+    for (var i = 0; i < 400; i++) {
+      final h = hijriOf(now.add(Duration(days: i)));
+      if (h.month == 9 && h.day == 1) return i;
+    }
+    return 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DateTime>(
+      stream: Stream.periodic(const Duration(seconds: 1), (_) => DateTime.now()),
+      initialData: DateTime.now(),
+      builder: (_, snap) {
+        final now = snap.data!;
+        final today = PrayerService.forDay(now);
+        final tomorrow = PrayerService.forDay(now.add(const Duration(days: 1)));
+        DateTime at(List<PrayerTime> l, String k) => l.firstWhere((p) => p.key == k).time;
+        final sehri = at(today, 'fajr'), iftar = at(today, 'maghrib'), isha = at(today, 'isha');
+        final h = hijriOf(now);
+        final inRamadan = h.month == 9;
+        String label;
+        Duration left;
+        if (now.isBefore(sehri)) {
+          label = tr('untilSehri'); left = sehri.difference(now);
+        } else if (now.isBefore(iftar)) {
+          label = tr('untilIftar'); left = iftar.difference(now);
+        } else {
+          label = tr('untilSehri'); left = at(tomorrow, 'fajr').difference(now);
+        }
+        Widget cell(String t, DateTime v, IconData i) => Expanded(
+              child: Column(children: [
+                Icon(i, color: accent(context), size: 22),
+                const SizedBox(height: 4),
+                Text(t, style: const TextStyle(fontSize: 12)),
+                Text(fmtTime(v), style: const TextStyle(fontWeight: FontWeight.w800)),
+              ]),
+            );
+        return Panel(
+          child: Column(children: [
+            Row(children: [
+              Icon(Icons.nightlight_round, color: accent(context)),
+              const SizedBox(width: 8),
+              Expanded(child: Text(tr('ramadan'), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+              Text(inRamadan ? '${tr('ramadanDay')} ${nd(h.day)}' : '${tr('toRamadan')} ${nd(_daysToRamadan(now))} ${tr('days')}',
+                  style: TextStyle(color: accent(context), fontWeight: FontWeight.w700, fontSize: 12)),
+            ]),
+            const SizedBox(height: 12),
+            Text(label, style: const TextStyle(fontSize: 12)),
+            Text(fmtDur(left), style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: accent(context))),
+            const SizedBox(height: 10),
+            Row(children: [
+              cell(tr('sehri'), sehri, Icons.wb_twilight),
+              cell(tr('iftar'), iftar, Icons.wb_sunny_outlined),
+              cell(tr('taraweeh'), isha, Icons.nights_stay_outlined),
+            ]),
+          ]),
+        );
+      },
+    );
+  }
+}
+
+class CalendarCard extends StatefulWidget {
+  const CalendarCard({super.key});
+  @override
+  State<CalendarCard> createState() => _CalendarCardState();
+}
+
+class _CalendarCardState extends State<CalendarCard> {
+  DateTime month = DateTime(DateTime.now().year, DateTime.now().month);
+  DateTime sel = DateTime.now();
+
+  static const enM = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  static const bnM = ['জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'];
+
+  @override
+  Widget build(BuildContext context) {
+    final bn = st.lang == 'bn';
+    final first = DateTime(month.year, month.month, 1);
+    final days = DateTime(month.year, month.month + 1, 0).day;
+    final lead = first.weekday % 7; // Sunday first
+    final wd = bn ? ['র', 'সো', 'ম', 'বু', 'বৃ', 'শু', 'শ'] : ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    final today = DateTime.now();
+    final hs = hijriOf(sel), bs = bnDate(sel);
+    final h1 = hijriOf(first), h2 = hijriOf(DateTime(month.year, month.month, days));
+
+    return Panel(
+      child: Column(children: [
+        Row(children: [
+          Icon(Icons.calendar_month_outlined, color: accent(context)),
+          const SizedBox(width: 8),
+          Expanded(child: Text(tr('calendar'), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+          IconButton(
+              visualDensity: VisualDensity.compact,
+              onPressed: () => setState(() => month = DateTime(month.year, month.month - 1)),
+              icon: const Icon(Icons.chevron_left)),
+          IconButton(
+              visualDensity: VisualDensity.compact,
+              onPressed: () => setState(() => month = DateTime(month.year, month.month + 1)),
+              icon: const Icon(Icons.chevron_right)),
+        ]),
+        Text('${bn ? bnM[month.month - 1] : enM[month.month - 1]} ${nd(month.year)}',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+        Text('${h1.monthName}${h1.month != h2.month ? ' - ${h2.monthName}' : ''} ${nd(h2.year)}',
+            style: TextStyle(color: accent(context), fontSize: 12)),
+        const SizedBox(height: 8),
+        Row(children: [for (final w in wd) Expanded(child: Center(child: Text(w, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12))))]),
+        const SizedBox(height: 4),
+        GridView.count(
+          crossAxisCount: 7,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          childAspectRatio: .85,
+          children: [
+            for (var i = 0; i < lead; i++) const SizedBox(),
+            for (var d = 1; d <= days; d++)
+              Builder(builder: (_) {
+                final dt = DateTime(month.year, month.month, d);
+                final isSel = dt.year == sel.year && dt.month == sel.month && dt.day == sel.day;
+                final isToday = dt.year == today.year && dt.month == today.month && dt.day == today.day;
+                return GestureDetector(
+                  onTap: () => setState(() => sel = dt),
+                  child: Container(
+                    margin: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: isSel ? AppTheme.green : (isToday ? AppTheme.gold.withOpacity(.35) : null),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      Text(nd(d), style: TextStyle(fontWeight: FontWeight.w700, color: isSel ? Colors.white : null)),
+                      Text(nd(bnDate(dt).day), style: TextStyle(fontSize: 9, color: isSel ? AppTheme.gold : Colors.grey)),
+                    ]),
+                  ),
+                );
+              }),
+          ],
+        ),
+        const Divider(),
+        Row(children: [
+          _info(tr('enDate'), '${nd(sel.day)} ${bn ? bnM[sel.month - 1] : enM[sel.month - 1]} ${nd(sel.year)}'),
+          _info(tr('bnDate'), '${nd(bs.day)} ${bs.monthName} ${nd(bs.year)}'),
+          _info(tr('hijriDate'), '${nd(hs.day)} ${hs.monthName} ${nd(hs.year)}'),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _info(String t, String v) => Expanded(
+        child: Column(children: [
+          Text(t, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          const SizedBox(height: 2),
+          Text(v, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+        ]),
+      );
+}
+
+=== END ===
+
+=== FILE: lib/screens/more.dart ===
+import 'package:flutter/material.dart';
+import '../core/app_state.dart';
+import '../core/widgets.dart';
+import 'dua.dart';
+import 'quiz.dart';
+import 'quran.dart';
+import 'settings.dart';
+
+class MoreScreen extends StatelessWidget {
+  const MoreScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget tile(IconData i, String t, Widget page) => Panel(
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => page)),
+          child: Row(children: [
+            CircleAvatar(backgroundColor: AppTheme.gold.withOpacity(.25), child: Icon(i, color: accent(context))),
+            const SizedBox(width: 14),
+            Expanded(child: Text(t, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
+            const Icon(Icons.chevron_right),
+          ]),
+        );
+    return SafeArea(
+      child: ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 24), children: [
+        Text(tr('more'), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 14),
+        tile(Icons.menu_book_outlined, tr('quran'), const QuranScreen()),
+        tile(Icons.front_hand_outlined, tr('dua'), const DuaScreen()),
+        tile(Icons.quiz_outlined, tr('quiz'), const QuizScreen()),
+        tile(Icons.settings_outlined, tr('settings'), const SettingsScreen()),
+      ]),
+    );
+  }
+}
+
+=== END ===
+
+=== FILE: lib/screens/prayer.dart ===
+import 'package:flutter/material.dart';
+import '../core/app_state.dart';
+import '../core/services.dart';
+import '../core/widgets.dart';
+import 'home.dart';
+
+class PrayerScreen extends StatefulWidget {
+  const PrayerScreen({super.key});
+  @override
+  State<PrayerScreen> createState() => _PrayerScreenState();
+}
+
+class _PrayerScreenState extends State<PrayerScreen> {
+  bool busy = false;
+
+  Future<void> _loc() async {
+    setState(() => busy = true);
+    await PrayerService.updateLocation();
+    if (mounted) setState(() => busy = false);
+  }
+
+  static const icons = {
+    'fajr': Icons.wb_twilight,
+    'sunrise': Icons.wb_sunny_outlined,
+    'dhuhr': Icons.light_mode_outlined,
+    'asr': Icons.wb_cloudy_outlined,
+    'maghrib': Icons.nights_stay_outlined,
+    'isha': Icons.dark_mode_outlined,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final list = PrayerService.forDay(now);
+    final cur = PrayerService.current(now);
+    final nx = PrayerService.next(now);
+    return SafeArea(
+      child: RefreshIndicator(
+        color: AppTheme.green,
+        backgroundColor: AppTheme.gold,
+        onRefresh: _loc,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          children: [
+            Text(tr('prayer'), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 12),
+            const PrayerCard(),
+            Panel(
+              child: Row(children: [
+                Icon(Icons.location_on_outlined, color: accent(context)),
+                const SizedBox(width: 8),
+                Expanded(child: Text('${tr('location')}: ${nd(st.place)}')),
+                busy
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                    : TextButton(onPressed: _loc, child: Text(tr('updateLoc'))),
+              ]),
+            ),
+            SectionTitle(tr('prayerAlerts'), Icons.notifications_active_outlined),
+            for (final p in list)
+              Panel(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(children: [
+                  Icon(icons[p.key], color: accent(context)),
+                  const SizedBox(width: 14),
+                  Expanded(
+                      child: Text(tr(p.key),
+                          style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: (cur?.key == p.key || nx.key == p.key) ? FontWeight.w800 : FontWeight.w500))),
+                  Text(fmtTime(p.time), style: TextStyle(fontWeight: FontWeight.w800, color: accent(context))),
+                  const SizedBox(width: 8),
+                  if (p.key == 'sunrise')
+                    const SizedBox(width: 48)
+                  else
+                    Switch(
+                      value: st.prayerOn[p.key] ?? true,
+                      onChanged: (v) {
+                        st.setPrayerOn(p.key, v);
+                        Notifier.schedule();
+                        setState(() {});
+                      },
+                    ),
+                ]),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+=== END ===
+
+=== FILE: lib/screens/quiz.dart ===
+import 'package:flutter/material.dart';
+import '../core/app_state.dart';
+import '../core/services.dart';
+import '../core/widgets.dart';
+
+class Q {
+  final String bn, en;
+  final List<String> obn, oen;
+  final int a;
+  const Q(this.bn, this.en, this.obn, this.oen, this.a);
+
+  /// Build a question from an admin-panel map; returns null if it is incomplete.
+  static Q? tryParse(Map<String, dynamic> m) {
+    List<String> strs(dynamic v) {
+      final l = v is List ? v : (v is Map ? v.values.toList() : <dynamic>[]);
+      return l.map((e) => '$e').toList();
+    }
+
+    final obn = strs(m['obn']), oen = strs(m['oen']);
+    final bn = '${m['bn'] ?? ''}', en = '${m['en'] ?? ''}';
+    final a = (num.tryParse('${m['a']}') ?? -1).toInt();
+    final ob = obn.isNotEmpty ? obn : oen;
+    final oe = oen.isNotEmpty ? oen : obn;
+    final qb = bn.isNotEmpty ? bn : en;
+    final qe = en.isNotEmpty ? en : bn;
+    if (qb.isEmpty || ob.length < 2 || ob.length != oe.length || a < 0 || a >= ob.length) return null;
+    return Q(qb, qe, ob, oe, a);
+  }
+}
+
+const questions = [
+  Q('ইসলামের স্তম্ভ কয়টি?', 'How many pillars of Islam are there?', ['৩টি', '৫টি', '৭টি', '৪টি'], ['3', '5', '7', '4'], 1),
+  Q('কোরআনের প্রথম সূরা কোনটি?', 'What is the first surah of the Quran?', ['আল-বাকারা', 'আল-ইখলাস', 'আল-ফাতিহা', 'আন-নাস'], ['Al-Baqarah', 'Al-Ikhlas', 'Al-Fatiha', 'An-Nas'], 2),
+  Q('কোরআনে মোট সূরা কয়টি?', 'How many surahs are in the Quran?', ['১১৪', '১০০', '১২০', '৯৯'], ['114', '100', '120', '99'], 0),
+  Q('প্রতিদিন কত ওয়াক্ত নামাজ ফরজ?', 'How many daily prayers are obligatory?', ['৩', '৪', '৫', '৬'], ['3', '4', '5', '6'], 2),
+  Q('রমজান হিজরি কোন মাস?', 'Which Hijri month is Ramadan?', ['৭ম', '৮ম', '৯ম', '১০ম'], ['7th', '8th', '9th', '10th'], 2),
+  Q('কাবা শরিফ কোন শহরে অবস্থিত?', 'In which city is the Kaaba?', ['মদিনা', 'মক্কা', 'জেদ্দা', 'তায়েফ'], ['Madinah', 'Makkah', 'Jeddah', 'Taif'], 1),
+  Q('প্রথম নবী কে?', 'Who was the first prophet?', ['আদম (আ.)', 'নুহ (আ.)', 'ইবরাহিম (আ.)', 'মুসা (আ.)'], ['Adam (AS)', 'Nuh (AS)', 'Ibrahim (AS)', 'Musa (AS)'], 0),
+  Q('সূরা ইখলাসে আয়াত কয়টি?', 'How many ayahs are in Surah Al-Ikhlas?', ['৩', '৪', '৫', '৬'], ['3', '4', '5', '6'], 1),
+  Q('যাকাত কত শতাংশ দিতে হয় (সাধারণত)?', 'What percentage is the usual zakat rate?', ['১%', '২.৫%', '৫%', '১০%'], ['1%', '2.5%', '5%', '10%'], 1),
+  Q('ঈদুল ফিতর কোন মাসের পর পালিত হয়?', 'Eid al-Fitr comes after which month?', ['রমজান', 'রজব', 'শাবান', 'মুহাররম'], ['Ramadan', 'Rajab', 'Shaban', 'Muharram'], 0),
+];
+
+class QuizScreen extends StatefulWidget {
+  const QuizScreen({super.key});
+  @override
+  State<QuizScreen> createState() => _QuizScreenState();
+}
+
+class _QuizScreenState extends State<QuizScreen> {
+  late List<Q> list;
+  List<Q> pool = questions;
+  int i = 0, score = 0;
+  int? picked;
+  bool done = false;
+
+  /// Admin-managed questions (Firebase /quiz). Empty or missing -> built-in defaults.
+  static List<Q> _parse(List<Map<String, dynamic>> raw) {
+    final l = <Q>[];
+    for (final m in raw) {
+      final q = Q.tryParse(m);
+      if (q != null) l.add(q);
+    }
+    return l.isEmpty ? questions : l;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    pool = _parse(Remote.cachedList('quiz'));
+    _start();
+    Remote.list('quiz').then((r) {
+      if (!mounted) return;
+      setState(() {
+        pool = _parse(r);
+        // not started answering yet -> use the fresh questions right away
+        if (i == 0 && picked == null && !done) _start();
+      });
+    });
+  }
+
+  void _start() {
+    list = [...pool]..shuffle();
+    i = 0; score = 0; picked = null; done = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bn = st.lang == 'bn';
+    return Scaffold(
+      appBar: AppBar(title: Text(tr('quiz'))),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: done ? _result() : _question(bn),
+      ),
+    );
+  }
+
+  Widget _result() => Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.emoji_events_outlined, size: 80, color: accent(context)),
+          const SizedBox(height: 12),
+          Text('${tr('score')}: ${nd(score)} / ${nd(list.length)}', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+          Text('${tr('best')}: ${nd(st.quizBest)}'),
+          const SizedBox(height: 20),
+          FilledButton(onPressed: () => setState(_start), child: Text(tr('again'))),
+        ]),
+      );
+
+  Widget _question(bool bn) {
+    final q = list[i];
+    final opts = bn ? q.obn : q.oen;
+    return ListView(children: [
+      LinearProgressIndicator(value: (i + 1) / list.length, minHeight: 6, borderRadius: BorderRadius.circular(3)),
+      const SizedBox(height: 18),
+      Text('${nd(i + 1)} / ${nd(list.length)}', style: TextStyle(color: accent(context), fontWeight: FontWeight.w700)),
+      const SizedBox(height: 8),
+      Text(bn ? q.bn : q.en, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 16),
+      for (var k = 0; k < opts.length; k++)
+        Panel(
+          onTap: picked != null
+              ? null
+              : () => setState(() {
+                    picked = k;
+                    if (k == q.a) score++;
+                  }),
+          child: Row(children: [
+            Expanded(child: Text(opts[k], style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
+            if (picked != null && k == q.a) const Icon(Icons.check_circle, color: Colors.green),
+            if (picked == k && k != q.a) const Icon(Icons.cancel, color: Colors.red),
+          ]),
+        ),
+      if (picked != null)
+        FilledButton(
+          onPressed: () => setState(() {
+            if (i + 1 >= list.length) {
+              done = true;
+              if (score > st.quizBest) st.setQuizBest(score);
+            } else {
+              i++;
+              picked = null;
+            }
+          }),
+          child: Text(tr('nextQ')),
+        ),
+    ]);
+  }
+}
+
+=== END ===
+
+=== FILE: lib/screens/quran.dart ===
+import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/material.dart';
+import '../core/app_state.dart';
+import '../core/services.dart';
+import '../core/widgets.dart';
+
+class QuranScreen extends StatefulWidget {
+  const QuranScreen({super.key});
+  @override
+  State<QuranScreen> createState() => _QuranScreenState();
+}
+
+class _QuranScreenState extends State<QuranScreen> {
+  List<dynamic>? surahs;
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => loading = true);
+    final j = await Remote.cached('https://api.alquran.cloud/v1/surah', 'q_list');
+    surahs = j == null ? null : j['data'] as List<dynamic>;
+    if (mounted) setState(() => loading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(tr('quran'))),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : surahs == null
+              ? Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Padding(padding: const EdgeInsets.all(24), child: Text(tr('needNet'), textAlign: TextAlign.center)),
+                  FilledButton(onPressed: _load, child: Text(tr('retry'))),
+                ]))
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  itemCount: surahs!.length,
+                  itemBuilder: (_, i) {
+                    final s = surahs![i];
+                    return Panel(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SurahScreen(number: s['number'], name: s['englishName']))),
+                      child: Row(children: [
+                        CircleAvatar(radius: 18, backgroundColor: AppTheme.gold.withOpacity(.25), child: Text(nd(s['number']), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800))),
+                        const SizedBox(width: 14),
+                        Expanded(
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text('${s['englishName']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                          Text('${s['englishNameTranslation']} - ${nd(s['numberOfAyahs'])} ${tr('ayahs')}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                        ])),
+                        Text('${s['name']}', style: TextStyle(fontSize: 20, color: accent(context))),
+                      ]),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+class SurahScreen extends StatefulWidget {
+  final int number;
+  final String name;
+  const SurahScreen({super.key, required this.number, required this.name});
+  @override
+  State<SurahScreen> createState() => _SurahScreenState();
+}
+
+class _SurahScreenState extends State<SurahScreen> {
+  List<dynamic>? ar, tx;
+  bool loading = true, playing = false;
+  final player = AudioPlayer();
+
+  @override
+  void initState() {
+    super.initState();
+    player.onPlayerComplete.listen((_) => setState(() => playing = false));
+    _load();
+  }
+
+  @override
+  void dispose() {
+    player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final ed = st.lang == 'bn' ? 'bn.bengali' : 'en.sahih';
+    final j = await Remote.cached(
+        'https://api.alquran.cloud/v1/surah/${widget.number}/editions/quran-uthmani,$ed', 'q_${widget.number}_$ed');
+    if (j != null) {
+      ar = j['data'][0]['ayahs'];
+      tx = j['data'][1]['ayahs'];
+    }
+    if (mounted) setState(() => loading = false);
+  }
+
+  Future<void> _toggle() async {
+    if (playing) {
+      await player.stop();
+      setState(() => playing = false);
+    } else {
+      setState(() => playing = true);
+      try {
+        await player.play(UrlSource('https://cdn.islamic.network/quran/audio-surah/128/ar.alafasy/${widget.number}.mp3'));
+      } catch (_) {
+        setState(() => playing = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.name), actions: [
+        IconButton(tooltip: playing ? tr('stop') : tr('play'), onPressed: _toggle, icon: Icon(playing ? Icons.stop_circle_outlined : Icons.play_circle_outline)),
+      ]),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : ar == null
+              ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(tr('needNet'), textAlign: TextAlign.center)))
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  itemCount: ar!.length,
+                  itemBuilder: (_, i) => Panel(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Align(
+                          alignment: Alignment.centerRight,
+                          child: Text('${ar![i]['text']}', textDirection: TextDirection.rtl, style: const TextStyle(fontSize: 26, height: 2))),
+                      const SizedBox(height: 8),
+                      Text('${nd(i + 1)}. ${tx![i]['text']}'),
+                    ]),
+                  ),
+                ),
+    );
+  }
+}
+
+=== END ===
+
+=== FILE: lib/screens/settings.dart ===
+import 'package:flutter/material.dart';
+import '../core/app_state.dart';
+import '../core/services.dart';
+import '../core/widgets.dart';
+
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(tr('settings'))),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Panel(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(tr('language'), style: const TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            SegmentedButton<String>(
+              segments: const [ButtonSegment(value: 'bn', label: Text('বাংলা')), ButtonSegment(value: 'en', label: Text('English'))],
+              selected: {st.lang},
+              onSelectionChanged: (s) {
+                st.setLang(s.first);
+                Notifier.schedule();
+                setState(() {});
+              },
+            ),
+            const SizedBox(height: 16),
+            Text(tr('theme'), style: const TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            SegmentedButton<ThemeMode>(
+              segments: [
+                ButtonSegment(value: ThemeMode.system, label: Text(tr('auto')), icon: const Icon(Icons.brightness_auto_outlined)),
+                ButtonSegment(value: ThemeMode.light, label: Text(tr('light')), icon: const Icon(Icons.light_mode_outlined)),
+                ButtonSegment(value: ThemeMode.dark, label: Text(tr('dark')), icon: const Icon(Icons.dark_mode_outlined)),
+              ],
+              selected: {st.mode},
+              onSelectionChanged: (s) {
+                st.setMode(s.first);
+                setState(() {});
+              },
+            ),
+          ]),
+        ),
+        Panel(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${tr('fontSize')}  (${nd((st.fontScale * 100).round())}%)', style: const TextStyle(fontWeight: FontWeight.w700)),
+            Slider(
+              min: .85,
+              max: 1.4,
+              divisions: 11,
+              value: st.fontScale,
+              onChanged: (v) {
+                st.setFont(v);
+                setState(() {});
+              },
+            ),
+          ]),
+        ),
+        Panel(
+          child: Column(children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(tr('azanNotif'), style: const TextStyle(fontWeight: FontWeight.w700)),
+              value: st.azan,
+              onChanged: (v) async {
+                st.setAzan(v);
+                if (v) await Notifier.ask();
+                await Notifier.schedule();
+                setState(() {});
+              },
+            ),
+            const Divider(),
+            Row(children: [
+              Expanded(child: Text(tr('hijriAdj'), style: const TextStyle(fontWeight: FontWeight.w700))),
+              IconButton(
+                  onPressed: st.hijriAdj > -2 ? () { st.setHijriAdj(st.hijriAdj - 1); setState(() {}); } : null,
+                  icon: const Icon(Icons.remove_circle_outline)),
+              Text(nd(st.hijriAdj > 0 ? '+${st.hijriAdj}' : st.hijriAdj), style: const TextStyle(fontWeight: FontWeight.w800)),
+              IconButton(
+                  onPressed: st.hijriAdj < 2 ? () { st.setHijriAdj(st.hijriAdj + 1); setState(() {}); } : null,
+                  icon: const Icon(Icons.add_circle_outline)),
+            ]),
+          ]),
+        ),
+        Panel(
+          child: Row(children: [
+            Image.asset('assets/logo.png', width: 48),
+            const SizedBox(width: 12),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(tr('app'), style: const TextStyle(fontWeight: FontWeight.w800)),
+              Text('1.0.0', style: TextStyle(color: accent(context))),
+            ]),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+=== END ===
+
+=== FILE: lib/screens/tasbih.dart ===
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../core/app_state.dart';
+import '../core/widgets.dart';
+
+class TasbihScreen extends StatefulWidget {
+  const TasbihScreen({super.key});
+  @override
+  State<TasbihScreen> createState() => _TasbihScreenState();
+}
+
+class _TasbihScreenState extends State<TasbihScreen> {
+  void _tap() {
+    HapticFeedback.lightImpact();
+    st.tasbihCount++;
+    st.tasbihTotal++;
+    if (st.tasbihCount >= st.tasbihTarget) {
+      HapticFeedback.heavyImpact();
+      st.tasbihCount = 0;
+    }
+    st.saveTasbih();
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = st.tasbihCount / st.tasbihTarget;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(children: [
+          Align(alignment: Alignment.centerLeft, child: Text(tr('tasbih'), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800))),
+          const Spacer(),
+          GestureDetector(
+            onTap: _tap,
+            child: SizedBox(
+              width: 280,
+              height: 280,
+              child: Stack(alignment: Alignment.center, children: [
+                SizedBox.expand(
+                    child: CircularProgressIndicator(
+                        value: p, strokeWidth: 10, strokeCap: StrokeCap.round, color: AppTheme.gold, backgroundColor: AppTheme.gold.withOpacity(.2))),
+                Container(
+                  width: 236,
+                  height: 236,
+                  decoration: const BoxDecoration(shape: BoxShape.circle, gradient: emeraldGradient),
+                  alignment: Alignment.center,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Text(nd(st.tasbihCount), style: const TextStyle(color: AppTheme.gold, fontSize: 68, fontWeight: FontWeight.w800)),
+                    Text('/ ${nd(st.tasbihTarget)}', style: const TextStyle(color: Colors.white70, fontSize: 16)),
+                  ]),
+                ),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text('${tr('total')}: ${nd(st.tasbihTotal)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 16),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            for (final t in [33, 99, 100])
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: ChoiceChip(
+                  label: Text(nd(t)),
+                  selected: st.tasbihTarget == t,
+                  onSelected: (_) {
+                    st.tasbihTarget = t;
+                    st.tasbihCount = 0;
+                    st.saveTasbih();
+                    setState(() {});
+                  },
+                ),
+              ),
+            const SizedBox(width: 8),
+            IconButton.outlined(
+              tooltip: tr('reset'),
+              onPressed: () {
+                st.tasbihCount = 0;
+                st.saveTasbih();
+                setState(() {});
+              },
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          ]),
+          const Spacer(),
+        ]),
+      ),
+    );
+  }
+}
+
+=== END ===
+
+=== FILE: tool/patch_android.py ===
+"""Run after `flutter create --platforms=android --org com.bjdfarhma --project-name salah .`
+Adds Firebase (google-services), permissions, notification receivers, minSdk and desugaring."""
+import os, re, shutil
+
+def read(p): return open(p, encoding='utf-8').read()
+def write(p, s): open(p, 'w', encoding='utf-8').write(s)
+def first(*ps):
+    for p in ps:
+        if os.path.exists(p): return p
+    raise SystemExit('missing: ' + ' / '.join(ps))
+
+shutil.copy('google-services.json', 'android/app/google-services.json')
+
+# settings.gradle(.kts): declare google-services plugin
+sp = first('android/settings.gradle.kts', 'android/settings.gradle')
+s = read(sp)
+if 'google-services' not in s:
+    s = re.sub(r'(id\(?\s*"com\.android\.application"\s*\)?\s*version\s*"[^"]+"\s*apply\s*false)',
+               lambda m: m.group(1) + ('\n    id("com.google.gms.google-services") version "4.4.2" apply false' if sp.endswith('.kts')
+                                       else '\n    id "com.google.gms.google-services" version "4.4.2" apply false'), s, count=1)
+    write(sp, s)
+
+# app/build.gradle(.kts)
+bp = first('android/app/build.gradle.kts', 'android/app/build.gradle')
+kts = bp.endswith('.kts')
+b = read(bp)
+if 'google-services' not in b:
+    b = re.sub(r'(id\(?\s*"com\.android\.application"\s*\)?)',
+               lambda m: m.group(1) + ('\n    id("com.google.gms.google-services")' if kts else '\n    id "com.google.gms.google-services"'), b, count=1)
+b = re.sub(r'minSdk(Version)?\s*=?\s*flutter\.minSdkVersion', 'minSdk = 23' if kts else 'minSdkVersion 23', b)
+if 'ibraryDesugaring' not in b:
+    b = b.replace('compileOptions {', 'compileOptions {\n        ' + ('isCoreLibraryDesugaringEnabled = true' if kts else 'coreLibraryDesugaringEnabled true'), 1)
+    b += ('\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' if kts
+          else '\ndependencies {\n    coreLibraryDesugaring \'com.android.tools:desugar_jdk_libs:2.1.4\'\n}\n')
+write(bp, b)
+
+# Manifest
+mp = 'android/app/src/main/AndroidManifest.xml'
+m = read(mp)
+perms = ['INTERNET', 'POST_NOTIFICATIONS', 'ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION', 'VIBRATE',
+         'RECEIVE_BOOT_COMPLETED', 'SCHEDULE_EXACT_ALARM', 'WAKE_LOCK']
+add = ''.join('    <uses-permission android:name="android.permission.%s"/>\n' % p for p in perms if p not in m)
+m = m.replace('<application', add + '    <application', 1)
+m = re.sub(r'android:label="[^"]*"', 'android:label="Salah Time"', m, count=1)
+if 'ScheduledNotificationReceiver' not in m:
+    rec = ('        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n'
+           '        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n'
+           '            <intent-filter>\n'
+           '                <action android:name="android.intent.action.BOOT_COMPLETED"/>\n'
+           '                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n'
+           '                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n'
+           '                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>\n'
+           '            </intent-filter>\n'
+           '        </receiver>\n')
+    m = m.replace('</application>', rec + '    </application>', 1)
+write(mp, m)
+print('Android project patched.')
+
+=== END ===
+
